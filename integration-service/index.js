@@ -21,27 +21,40 @@ const assertion = jwt.sign(
   { algorithm: "RS256", expiresIn: "3m" }
 );
 
+async function logEvent({
+  sfdcRecordId,
+  changeType,
+  changedFields,
+  status,
+  errorMessage,
+  payload
+}) {
+  try {
+    await fetch(`${ERP_API_URL}/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sfdcRecordId,
+        changeType,
+        changedFields,
+        status,
+        errorMessage,
+        payload
+      })
+    });
+  } catch (err) {
+    // If even the event log call fails, do not crash the listener -- just surface it locally.
+    console.error("Failed to log sync event:", err.message);
+  }
+}
+
 async function syncOrderToErp(payload, header) {
   const sfdcOrderId = header.recordIds[0];
 
-  // Only forward fields that were actually present in this change event.
-  // CDC UPDATE events only include changed fields -- if we defaulted missing
-  // fields to null here, we would tell the ERP to erase data that never changed.
   const body = { sfdcOrderId };
-
-  if (payload.Account__c !== undefined) {
-    // Note: this is the Account record Id, not its Name -- CDC does not
-    // traverse relationships by default. A real implementation would add
-    // Account.Name as an enriched field on the channel member, or do a
-    // follow-up SOQL query.
-    body.accountName = payload.Account__c;
-  }
-  if (payload.Status__c !== undefined) {
-    body.status = payload.Status__c;
-  }
-  if (payload.Amount__c !== undefined) {
-    body.amount = payload.Amount__c;
-  }
+  if (payload.Account__c !== undefined) body.accountName = payload.Account__c;
+  if (payload.Status__c !== undefined) body.status = payload.Status__c;
+  if (payload.Amount__c !== undefined) body.amount = payload.Amount__c;
 
   try {
     const res = await fetch(`${ERP_API_URL}/orders`, {
@@ -54,14 +67,38 @@ async function syncOrderToErp(payload, header) {
 
     if (!res.ok) {
       console.error(`ERP sync failed for ${sfdcOrderId}:`, data);
+      await logEvent({
+        sfdcRecordId: sfdcOrderId,
+        changeType: header.changeType,
+        changedFields: header.changedFields,
+        status: "error",
+        errorMessage: data.error || "Unknown error from ERP Simulator",
+        payload: body
+      });
       return;
     }
 
     console.log(
       `ERP sync ${data.action} for ${sfdcOrderId} -> ${data.order.erp_order_id}`
     );
+    await logEvent({
+      sfdcRecordId: sfdcOrderId,
+      changeType: header.changeType,
+      changedFields: header.changedFields,
+      status: "success",
+      errorMessage: null,
+      payload: body
+    });
   } catch (err) {
     console.error(`ERP sync error for ${sfdcOrderId}:`, err.message);
+    await logEvent({
+      sfdcRecordId: sfdcOrderId,
+      changeType: header.changeType,
+      changedFields: header.changedFields,
+      status: "error",
+      errorMessage: err.message,
+      payload: body
+    });
   }
 }
 
