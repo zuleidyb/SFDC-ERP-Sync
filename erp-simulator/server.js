@@ -98,8 +98,6 @@ app.get("/orders", async (req, res) => {
   res.json(result.rows);
 });
 
-// Soft-delete: mark the row instead of removing it, preserving the audit trail.
-// A DELETE for a record that was never synced is a valid no-op, not an error.
 app.delete("/orders/:sfdcOrderId", async (req, res) => {
   const { sfdcOrderId } = req.params;
 
@@ -124,6 +122,107 @@ app.delete("/orders/:sfdcOrderId", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Shared upsert logic for inventory, keyed on erp_item_id (the ERP owns this identity).
+async function upsertInventory({ erpItemId, productName, quantityOnHand }) {
+  if (!erpItemId) {
+    throw Object.assign(new Error("erpItemId is required"), {
+      statusCode: 400
+    });
+  }
+
+  const existing = await pool.query(
+    "SELECT * FROM inventory WHERE erp_item_id = $1",
+    [erpItemId]
+  );
+
+  if (existing.rows.length > 0) {
+    const fields = [];
+    const values = [];
+    let i = 1;
+
+    if (productName !== undefined) {
+      fields.push(`product_name = $${i++}`);
+      values.push(productName);
+    }
+    if (quantityOnHand !== undefined) {
+      fields.push(`quantity_on_hand = $${i++}`);
+      values.push(quantityOnHand);
+    }
+
+    if (fields.length === 0) {
+      throw Object.assign(new Error("No updatable fields provided"), {
+        statusCode: 400
+      });
+    }
+
+    fields.push("updated_at = now()");
+    values.push(erpItemId);
+
+    const result = await pool.query(
+      `UPDATE inventory SET ${fields.join(", ")} WHERE erp_item_id = $${i} RETURNING *`,
+      values
+    );
+    return { action: "updated", item: result.rows[0] };
+  }
+
+  if (productName === undefined || quantityOnHand === undefined) {
+    throw Object.assign(
+      new Error(
+        "productName and quantityOnHand are required to create a new inventory item"
+      ),
+      { statusCode: 400 }
+    );
+  }
+
+  const result = await pool.query(
+    `INSERT INTO inventory (erp_item_id, product_name, quantity_on_hand)
+     VALUES ($1, $2, $3)
+     RETURNING *`,
+    [erpItemId, productName, quantityOnHand]
+  );
+  return { action: "created", item: result.rows[0] };
+}
+
+// Fire-and-forget: tell the Integration Service an inventory item changed so it can
+// push the update into Salesforce. A webhook failure must not fail the ERP write itself.
+async function notifyInventoryChanged(item) {
+  const webhookUrl =
+    process.env.INTEGRATION_SERVICE_URL || "http://localhost:4001";
+  await fetch(`${webhookUrl}/webhooks/inventory-changed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      erpItemId: item.erp_item_id,
+      productName: item.product_name,
+      quantityOnHand: item.quantity_on_hand
+    })
+  });
+}
+
+app.post("/inventory", async (req, res) => {
+  try {
+    const result = await upsertInventory(req.body);
+    res.status(result.action === "created" ? 201 : 200).json(result);
+
+    notifyInventoryChanged(result.item).catch((err) => {
+      console.error(
+        "Failed to notify Integration Service of inventory change:",
+        err.message
+      );
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+app.get("/inventory", async (req, res) => {
+  const result = await pool.query(
+    "SELECT * FROM inventory ORDER BY updated_at DESC"
+  );
+  res.json(result.rows);
 });
 
 // Sync event log: every CDC event the Integration Service processes gets recorded here,
@@ -188,7 +287,6 @@ app.get("/metrics", async (req, res) => {
   res.json(result.rows[0]);
 });
 
-// Retry a failed sync event using the payload that was originally captured.
 app.post("/events/:id/retry", async (req, res) => {
   const { id } = req.params;
 

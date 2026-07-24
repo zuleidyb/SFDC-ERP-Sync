@@ -3,23 +3,52 @@ const fs = require("fs");
 const path = require("path");
 const jwt = require("jsonwebtoken");
 const jsforce = require("jsforce");
+const express = require("express");
 
 const ERP_API_URL = process.env.ERP_API_URL || "http://localhost:4000";
+const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 4001;
+const SF_API_VERSION = "v61.0";
 
 const privateKey = fs.readFileSync(
   path.resolve(__dirname, process.env.SF_PRIVATE_KEY_PATH),
   "utf8"
 );
 
-const assertion = jwt.sign(
-  {
-    iss: process.env.SF_CONSUMER_KEY,
-    sub: process.env.SF_USERNAME,
-    aud: process.env.SF_LOGIN_URL
-  },
-  privateKey,
-  { algorithm: "RS256", expiresIn: "3m" }
-);
+let accessToken = null;
+let instanceUrl = null;
+
+function buildAssertion() {
+  return jwt.sign(
+    {
+      iss: process.env.SF_CONSUMER_KEY,
+      sub: process.env.SF_USERNAME,
+      aud: process.env.SF_LOGIN_URL
+    },
+    privateKey,
+    { algorithm: "RS256", expiresIn: "3m" }
+  );
+}
+
+async function authenticate() {
+  const res = await fetch(`${process.env.SF_LOGIN_URL}/services/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: buildAssertion()
+    })
+  });
+
+  const authData = await res.json();
+
+  if (!res.ok) {
+    throw new Error(`Auth failed: ${JSON.stringify(authData)}`);
+  }
+
+  accessToken = authData.access_token;
+  instanceUrl = authData.instance_url;
+  console.log("Authenticated. Instance URL:", instanceUrl);
+}
 
 async function logEvent({
   sfdcRecordId,
@@ -146,28 +175,118 @@ async function deleteOrderFromErp(header) {
   }
 }
 
-async function main() {
-  const res = await fetch(`${process.env.SF_LOGIN_URL}/services/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion
+// Reverse sync: push an ERP-originated inventory change into Salesforce via the
+// REST API's upsert-by-external-ID endpoint. Retries once after re-authenticating
+// if the access token has expired (401) -- this service runs long enough that
+// the original token from startup will not last forever.
+async function upsertInventoryInSalesforce(
+  erpItemId,
+  productName,
+  quantityOnHand,
+  isRetry = false
+) {
+  const url = `${instanceUrl}/services/data/${SF_API_VERSION}/sobjects/Inventory__c/ERP_Item_Id__c/${encodeURIComponent(erpItemId)}`;
+
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      Product_Name__c: productName,
+      Quantity_On_Hand__c: quantityOnHand,
+      Last_Synced_From_ERP__c: new Date().toISOString()
     })
   });
 
-  const authData = await res.json();
-
-  if (!res.ok) {
-    console.error("Auth failed:", authData);
-    process.exit(1);
+  if (res.status === 401 && !isRetry) {
+    console.log("Access token expired, re-authenticating...");
+    await authenticate();
+    return upsertInventoryInSalesforce(
+      erpItemId,
+      productName,
+      quantityOnHand,
+      true
+    );
   }
 
-  console.log("Authenticated. Instance URL:", authData.instance_url);
+  if (!res.ok && res.status !== 204) {
+    const errorBody = await res.json().catch(() => ({}));
+    throw new Error(
+      `Salesforce upsert failed (${res.status}): ${JSON.stringify(errorBody)}`
+    );
+  }
+
+  if (res.status === 201) {
+    const created = await res.json();
+    return { action: "created", sfdcId: created.id };
+  }
+
+  return { action: "updated", sfdcId: null };
+}
+
+function startWebhookServer() {
+  const app = express();
+  app.use(express.json());
+
+  app.post("/webhooks/inventory-changed", async (req, res) => {
+    const { erpItemId, productName, quantityOnHand } = req.body;
+
+    if (!erpItemId) {
+      return res.status(400).json({ error: "erpItemId is required" });
+    }
+
+    try {
+      const result = await upsertInventoryInSalesforce(
+        erpItemId,
+        productName,
+        quantityOnHand
+      );
+      console.log(`Inventory ${result.action} in Salesforce for ${erpItemId}`);
+
+      await logEvent({
+        sfdcRecordId: result.sfdcId || erpItemId,
+        changeType: "INVENTORY_UPDATE",
+        changedFields: ["Product_Name__c", "Quantity_On_Hand__c"],
+        status: "success",
+        errorMessage: null,
+        payload: { erpItemId, productName, quantityOnHand }
+      });
+
+      res.json({ action: result.action });
+    } catch (err) {
+      console.error(
+        `Inventory sync to Salesforce failed for ${erpItemId}:`,
+        err.message
+      );
+
+      await logEvent({
+        sfdcRecordId: erpItemId,
+        changeType: "INVENTORY_UPDATE",
+        changedFields: ["Product_Name__c", "Quantity_On_Hand__c"],
+        status: "error",
+        errorMessage: err.message,
+        payload: { erpItemId, productName, quantityOnHand }
+      });
+
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.listen(WEBHOOK_PORT, () => {
+    console.log(`Webhook receiver listening on port ${WEBHOOK_PORT}`);
+  });
+}
+
+async function main() {
+  await authenticate();
+
+  startWebhookServer();
 
   const conn = new jsforce.Connection({
-    instanceUrl: authData.instance_url,
-    accessToken: authData.access_token
+    instanceUrl,
+    accessToken
   });
 
   console.log("Subscribing to /data/Order__ChangeEvent ...");
@@ -177,7 +296,7 @@ async function main() {
       `\nCDC event: ${header.changeType} on ${header.entityName} (${header.recordIds[0]})`
     );
     console.log(
-      `Changed fields: ${header.changedFields.join(", ") || "(all, on create)"}`
+      `Changed fields: ${header.changedFields.join(", ") || "(none)"}`
     );
 
     if (header.changeType === "CREATE" || header.changeType === "UPDATE") {
