@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
   pull_request:
-    branches: [main]
+    branches: [main, staging]
 
 jobs:
   erp-simulator-tests:
@@ -91,9 +91,46 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  salesforce-ci:
-    name: Salesforce - Deploy & Test
+  salesforce-ci-staging:
+    name: Salesforce - Deploy & Test (Staging)
     runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/staging') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'staging')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+      - name: Write JWT key file
+        run: echo "${{ secrets.SF_STAGING_JWT_PRIVATE_KEY }}" > server.key
+      - name: Authenticate to Salesforce org
+        run: |
+          sf org login jwt \
+            --client-id "${{ secrets.SF_STAGING_CONSUMER_KEY }}" \
+            --jwt-key-file server.key \
+            --username "${{ secrets.SF_STAGING_USERNAME }}" \
+            --instance-url "${{ secrets.SF_STAGING_LOGIN_URL }}" \
+            --alias staging-org \
+            --set-default
+      - name: Validate deploy with Apex tests (pull requests)
+        if: github.event_name == 'pull_request'
+        run: sf project deploy validate --source-dir force-app --test-level RunLocalTests --target-org staging-org
+      - name: Deploy with Apex tests (push to staging)
+        if: github.event_name == 'push'
+        run: sf project deploy start --source-dir force-app --test-level RunLocalTests --target-org staging-org
+      - name: Clean up JWT key file
+        if: always()
+        run: rm -f server.key
+
+  salesforce-ci-production:
+    name: Salesforce - Deploy & Test (Production)
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -110,14 +147,14 @@ jobs:
             --jwt-key-file server.key \
             --username "${{ secrets.SF_USERNAME }}" \
             --instance-url "${{ secrets.SF_LOGIN_URL }}" \
-            --alias ci-org \
+            --alias production-org \
             --set-default
       - name: Validate deploy with Apex tests (pull requests)
         if: github.event_name == 'pull_request'
-        run: sf project deploy validate --source-dir force-app --test-level RunLocalTests --target-org ci-org
+        run: sf project deploy validate --source-dir force-app --test-level RunLocalTests --target-org production-org
       - name: Deploy with Apex tests (push to main)
         if: github.event_name == 'push'
-        run: sf project deploy start --source-dir force-app --test-level RunLocalTests --target-org ci-org
+        run: sf project deploy start --source-dir force-app --test-level RunLocalTests --target-org production-org
       - name: Clean up JWT key file
         if: always()
         run: rm -f server.key
