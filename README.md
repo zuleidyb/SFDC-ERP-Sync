@@ -1,57 +1,78 @@
-# Salesforce DX Project
+# SFDC-ERP-Sync
 
-Salesforce DX is a development approach that brings source-driven development, team collaboration, and continuous integration to the Salesforce Platform. Instead of working directly in an org through a web browser, you work with metadata as source files in a local DX project, track changes in version control, and deploy through automated processes.
+A Salesforce-centered integration project simulating a real enterprise pattern: syncing order data out of Salesforce into an external ERP system via Change Data Capture, with a live operations dashboard for monitoring and retrying failed syncs.
 
-This project template gets you started with the tools and structure you need to build Salesforce applications using source control, scratch orgs, and the Salesforce CLI.
+Built to mirror the kind of work a Salesforce Integration Developer does on an enterprise team: event-driven sync off Change Data Capture, JWT bearer service-to-service auth (no stored passwords), idempotent upserts, and observability into a sync pipeline that can fail and recover.
 
-## Prerequisites
+## Screenshots
 
-Before you start, make sure you have:
+**Live Ops Dashboard**
 
-- **Salesforce CLI** - Download from [developer.salesforce.com/tools/salesforcecli](https://developer.salesforce.com/tools/salesforcecli). See [Install Salesforce CLI](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_install_cli.htm) for details.
-- **VS Code with Salesforce Extension Pack** - See [Installation Instructions](https://developer.salesforce.com/docs/platform/sfvscode-extensions/guide/install.html) for details. Includes the Agentforce Vibes extension.
-- **A development org** - Sign up for a free Developer Edition org [here](https://developer.salesforce.com/signup).
-- **Dev Hub enabled** (optional, required to create scratch orgs) - You can enable Dev Hub in your development org under Setup > Dev Hub. See [Provide Developers Access to Salesforce DX Tools](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_setup_dx_tools.htm).
+![Ops Dashboard](screenshots/dashboard.png)
 
-## Project Structure
+**A real Change Data Capture event, captured off Salesforce**
 
-Your DX project follows this structure:
+![CDC Event](screenshots/cdc-json.png)
 
-- **`force-app/main/default/`** - Your metadata source files live in this default package directory. You can configure additional package directories in the `sfdx-project.json` file.
-- **`config/`** - Scratch org definitions and project settings
-- **`scripts/`** - Automation scripts for common tasks
-- **`sfdx-project.json`** - Project manifest that defines package directories, namespace, API version, and other project-level settings
+## Architecture
 
-See [Salesforce DX Project Configuration](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_ws_config.htm).
+Four pieces:
 
-## Get Started
+- **Salesforce** (`force-app/`) - `Order__c` and `Inventory__c` custom objects, Change Data Capture enabled, a least-privilege permission set, and a Connected App configured for the OAuth JWT bearer flow.
+- **Integration Service** (`integration-service/`) - a Node.js listener that authenticates to Salesforce via JWT bearer flow (RSA-signed assertion, no password), subscribes to the `Order__ChangeEvent` channel, and syncs changes to the ERP Simulator. Logs every sync attempt, success or failure, for observability.
+- **ERP Simulator** (`erp-simulator/`) - an Express + Postgres (Dockerized) REST API standing in for a real ERP like Oracle EBS/Fusion. Stores orders, tracks every sync event with retry support, and exposes `/metrics` for the dashboard.
+- **Ops Dashboard** (`dashboard/`) - a Vue 3 + Vite app polling the ERP Simulator: live metric tiles, a color-coded sync event feed with one-click retry, and an orders table.
 
-Ready to start developing? The [Get Started with Salesforce DX](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_get_started_dx.htm) guide walks you through your first project, from creating a scratch org to creating a simple Apex class or LWC to deploying your code to a sandbox.
+## Notable engineering decisions
 
-## Common Salesforce CLI Commands
+- **CDC over polling**: Salesforce is the system of record for orders, so outbound sync is event-driven via Change Data Capture rather than a scheduled poll.
+- **Idempotent upserts**: the ERP Simulator keys on `sfdc_order_id`, so a redelivered CDC event updates the existing row instead of creating a duplicate.
+- **A real bug, caught and fixed**: Salesforce CDC `UPDATE` events only include the fields that actually changed, not the full record. An early version of the sync treated the payload as the complete desired state and silently nulled out fields that were not part of the change. Fixed with true partial-update semantics on both the consumer and the ERP API - a good example of a CDC-specific gotcha that is easy to miss.
+- **Known limitation**: the CDC payload's `Account__c` is the Account's record Id, not its Name, since Change Data Capture does not traverse relationships by default. A production version would add `Account.Name` as an enriched field on the channel member, or do a follow-up SOQL query.
+- **Observability layer scoped in**: rather than reaching for Datadog, a lightweight `sync_events` table plus a Vue dashboard covers the same need for this project's scale - explicitly a simplification, called out rather than hidden.
 
-Here are common CLI commands that you'll use the most:
+## Setup
 
-- `sf org login web`: Authorize an org
-- `sf org open`: Open your org in a browser
-- `sf org create scratch`: Create a scratch org
-- `sf project deploy start`: Deploy metadata to your org
-- `sf project retrieve start`: Retrieve metadata from your org
-- `sf template generate <artifact>`: Scaffold new components, such as Apex classes and triggers, LWC components, Lightning apps, and more
-- `sf apex <command>`: Run Apex tests, run anonymous Apex blocks, and view logs
-- `sf data <command>`: Work with test data
-- `sf alias <command>`: Manage org aliases
-- `sf config <command>`: Configure CLI settings
+Prerequisites: Salesforce CLI, Node 18+, Docker.
 
-## Use Agentforce Vibes to Build Lightning Apps
+**Salesforce:**
 
-Transform your ideas into custom Lightning apps that extend CRM workflows directly in Lightning Experience. Through natural conversations with Agentforce Vibes, implement custom objects and fields, complex business logic, and dynamic UI components. See [Build a Lightning App Using Agentforce Vibes](https://developer.salesforce.com/docs/platform/einstein-for-devs/guide/lexapp-overview.html).
+```
+sf project deploy start --source-dir force-app
+sf org assign permset --name SFDC_ERP_Sync_Access
+```
 
-## Additional Resources
+Then create a Connected App with digital signatures enabled (JWT bearer flow) and note the Consumer Key.
 
-- [Agentforce Vibes Developer Guide](https://developer.salesforce.com/docs/platform/einstein-for-devs/guide/einstein-overview.html)
-- [Salesforce CLI Installation Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_intro.htm)
-- [Salesforce DX Developer Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/)
-- [Salesforce CLI Command Reference](https://developer.salesforce.com/docs/atlas.en-us.sfdx_cli_reference.meta/sfdx_cli_reference/)
-- [Salesforce CLI Plugin Development Guide](https://developer.salesforce.com/docs/platform/salesforce-cli-plugin/guide/conceptual-overview.html)
-- [Salesforce VS Code Extensions Documentation](https://developer.salesforce.com/tools/vscode/)
+**ERP Simulator:**
+
+```
+cd erp-simulator
+docker compose up -d
+npm install
+npm run dev
+```
+
+**Integration Service:**
+
+```
+cd integration-service
+npm install
+# configure .env: SF_CONSUMER_KEY, SF_USERNAME, SF_LOGIN_URL, SF_PRIVATE_KEY_PATH, ERP_API_URL
+node index.js
+```
+
+**Dashboard:**
+
+```
+cd dashboard
+npm install
+npm run dev
+```
+
+## What's next
+
+- DELETE change event handling
+- Reverse sync: ERP inventory changes pushed back into Salesforce via REST API
+- Automated tests: Apex, Jest, and Postman contract tests
+- CI/CD pipeline via GitHub Actions
