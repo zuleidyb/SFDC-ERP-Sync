@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Install Salesforce CLI
         run: npm install --global @salesforce/cli
       - name: Write JWT key file
@@ -115,7 +115,7 @@ jobs:
       - name: Validate deploy with Apex tests (pull requests)
         if: github.event_name == 'pull_request'
         run: sf project deploy validate --source-dir force-app --test-level RunLocalTests --target-org ci-org
-      - name: Deploy with Apex tests (push to master)
+      - name: Deploy with Apex tests (push to main)
         if: github.event_name == 'push'
         run: sf project deploy start --source-dir force-app --test-level RunLocalTests --target-org ci-org
       - name: Clean up JWT key file

@@ -15,7 +15,7 @@ defineProps({
   },
 });
 function formatTime(value) {
-  if (!value) return "—";
+  if (!value) return "N/A";
   return new Date(value).toLocaleTimeString();
 }
 </script>
@@ -42,7 +42,7 @@ function formatTime(value) {
             @click="$emit('retry', event.id)"
           >
             <span v-if="retryingIds.has(event.id)" class="spinner"></span>
-            {{ retryingIds.has(event.id) ? "Retrying…" : "Retry" }}
+            {{ retryingIds.has(event.id) ? "Retrying..." : "Retry" }}
           </button>
           <span v-if="retryResults[event.id] === 'success'" class="retry-flash retry-flash-success">
             Retried &check;
