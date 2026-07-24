@@ -1,12 +1,10 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const pool = require("./db");
-
 const app = express();
 app.use(cors());
 app.use(express.json());
-
 app.get("/health", async (req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -15,7 +13,6 @@ app.get("/health", async (req, res) => {
     res.status(500).json({ status: "error", error: err.message });
   }
 });
-
 // Shared upsert logic used by both the normal /orders route and event retries.
 async function upsertOrder({ sfdcOrderId, accountName, status, amount }) {
   if (!sfdcOrderId) {
@@ -23,17 +20,14 @@ async function upsertOrder({ sfdcOrderId, accountName, status, amount }) {
       statusCode: 400
     });
   }
-
   const existing = await pool.query(
     "SELECT * FROM orders WHERE sfdc_order_id = $1",
     [sfdcOrderId]
   );
-
   if (existing.rows.length > 0) {
     const fields = [];
     const values = [];
     let i = 1;
-
     if (accountName !== undefined) {
       fields.push(`account_name = $${i++}`);
       values.push(accountName);
@@ -46,29 +40,24 @@ async function upsertOrder({ sfdcOrderId, accountName, status, amount }) {
       fields.push(`amount = $${i++}`);
       values.push(amount);
     }
-
     if (fields.length === 0) {
       throw Object.assign(new Error("No updatable fields provided"), {
         statusCode: 400
       });
     }
-
     fields.push("updated_at = now()");
     values.push(sfdcOrderId);
-
     const result = await pool.query(
       `UPDATE orders SET ${fields.join(", ")} WHERE sfdc_order_id = $${i} RETURNING *`,
       values
     );
     return { action: "updated", order: result.rows[0] };
   }
-
   if (!status) {
     throw Object.assign(new Error("status is required to create a new order"), {
       statusCode: 400
     });
   }
-
   const erpOrderId = `ERP-ORD-${Date.now()}`;
   const result = await pool.query(
     `INSERT INTO orders (erp_order_id, sfdc_order_id, account_name, status, amount)
@@ -78,7 +67,6 @@ async function upsertOrder({ sfdcOrderId, accountName, status, amount }) {
   );
   return { action: "created", order: result.rows[0] };
 }
-
 app.post("/orders", async (req, res) => {
   try {
     const result = await upsertOrder(req.body);
@@ -88,7 +76,6 @@ app.post("/orders", async (req, res) => {
     res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
-
 app.get("/orders", async (req, res) => {
   const includeDeleted = req.query.includeDeleted === "true";
   const query = includeDeleted
@@ -97,10 +84,8 @@ app.get("/orders", async (req, res) => {
   const result = await pool.query(query);
   res.json(result.rows);
 });
-
 app.delete("/orders/:sfdcOrderId", async (req, res) => {
   const { sfdcOrderId } = req.params;
-
   try {
     const result = await pool.query(
       `UPDATE orders
@@ -109,21 +94,18 @@ app.delete("/orders/:sfdcOrderId", async (req, res) => {
        RETURNING *`,
       [sfdcOrderId]
     );
-
     if (result.rows.length === 0) {
       return res.json({
         action: "noop",
         message: "No matching order found; nothing to delete."
       });
     }
-
     res.json({ action: "deleted", order: result.rows[0] });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
-
 // Shared upsert logic for inventory, keyed on erp_item_id (the ERP owns this identity).
 async function upsertInventory({ erpItemId, productName, quantityOnHand }) {
   if (!erpItemId) {
@@ -131,17 +113,14 @@ async function upsertInventory({ erpItemId, productName, quantityOnHand }) {
       statusCode: 400
     });
   }
-
   const existing = await pool.query(
     "SELECT * FROM inventory WHERE erp_item_id = $1",
     [erpItemId]
   );
-
   if (existing.rows.length > 0) {
     const fields = [];
     const values = [];
     let i = 1;
-
     if (productName !== undefined) {
       fields.push(`product_name = $${i++}`);
       values.push(productName);
@@ -150,23 +129,19 @@ async function upsertInventory({ erpItemId, productName, quantityOnHand }) {
       fields.push(`quantity_on_hand = $${i++}`);
       values.push(quantityOnHand);
     }
-
     if (fields.length === 0) {
       throw Object.assign(new Error("No updatable fields provided"), {
         statusCode: 400
       });
     }
-
     fields.push("updated_at = now()");
     values.push(erpItemId);
-
     const result = await pool.query(
       `UPDATE inventory SET ${fields.join(", ")} WHERE erp_item_id = $${i} RETURNING *`,
       values
     );
     return { action: "updated", item: result.rows[0] };
   }
-
   if (productName === undefined || quantityOnHand === undefined) {
     throw Object.assign(
       new Error(
@@ -175,7 +150,6 @@ async function upsertInventory({ erpItemId, productName, quantityOnHand }) {
       { statusCode: 400 }
     );
   }
-
   const result = await pool.query(
     `INSERT INTO inventory (erp_item_id, product_name, quantity_on_hand)
      VALUES ($1, $2, $3)
@@ -184,7 +158,6 @@ async function upsertInventory({ erpItemId, productName, quantityOnHand }) {
   );
   return { action: "created", item: result.rows[0] };
 }
-
 // Fire-and-forget: tell the Integration Service an inventory item changed so it can
 // push the update into Salesforce. A webhook failure must not fail the ERP write itself.
 async function notifyInventoryChanged(item) {
@@ -200,12 +173,10 @@ async function notifyInventoryChanged(item) {
     })
   });
 }
-
 app.post("/inventory", async (req, res) => {
   try {
     const result = await upsertInventory(req.body);
     res.status(result.action === "created" ? 201 : 200).json(result);
-
     notifyInventoryChanged(result.item).catch((err) => {
       console.error(
         "Failed to notify Integration Service of inventory change:",
@@ -217,14 +188,12 @@ app.post("/inventory", async (req, res) => {
     res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
-
 app.get("/inventory", async (req, res) => {
   const result = await pool.query(
     "SELECT * FROM inventory ORDER BY updated_at DESC"
   );
   res.json(result.rows);
 });
-
 // Sync event log: every CDC event the Integration Service processes gets recorded here,
 // success or failure, along with the original payload so a failure can be retried later.
 app.post("/events", async (req, res) => {
@@ -236,13 +205,11 @@ app.post("/events", async (req, res) => {
     errorMessage,
     payload
   } = req.body;
-
   if (!sfdcRecordId || !changeType || !status || !payload) {
     return res.status(400).json({
       error: "sfdcRecordId, changeType, status, and payload are required"
     });
   }
-
   try {
     const result = await pool.query(
       `INSERT INTO sync_events (sfdc_record_id, change_type, changed_fields, status, error_message, payload)
@@ -263,7 +230,6 @@ app.post("/events", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.get("/events", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
   const result = await pool.query(
@@ -272,7 +238,6 @@ app.get("/events", async (req, res) => {
   );
   res.json(result.rows);
 });
-
 app.get("/metrics", async (req, res) => {
   const result = await pool.query(`
     SELECT
@@ -284,21 +249,17 @@ app.get("/metrics", async (req, res) => {
   `);
   res.json(result.rows[0]);
 });
-
 app.post("/events/:id/retry", async (req, res) => {
   const { id } = req.params;
-
   try {
     const eventResult = await pool.query(
       "SELECT * FROM sync_events WHERE id = $1",
       [id]
     );
     const event = eventResult.rows[0];
-
     if (!event) {
       return res.status(404).json({ error: "Event not found" });
     }
-
     try {
       const upsertResult = await upsertOrder(event.payload);
       const updated = await pool.query(
@@ -326,12 +287,11 @@ app.post("/events/:id/retry", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
+const port = process.env.APP_PORT || 4000;
 if (require.main === module) {
-  const port = process.env.APP_PORT || 4000;
   app.listen(port, () => {
     console.log(`ERP Simulator listening on port ${port}`);
   });
 }
 
-module.exports = { app };
+module.exports = { app, upsertOrder, upsertInventory };

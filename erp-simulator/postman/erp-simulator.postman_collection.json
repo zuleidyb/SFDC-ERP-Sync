@@ -1,0 +1,490 @@
+{
+  "info": {
+    "name": "ERP Simulator Contract Tests",
+    "_postman_id": "erp-simulator-contract-tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "sfdcOrderId", "value": "" },
+    { "key": "erpItemId", "value": "" },
+    { "key": "eventId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health returns ok",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('body reports ok status', function () {",
+                  "  const json = pm.response.json();",
+                  "  pm.expect(json.status).to.eql('ok');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "item": [
+        {
+          "name": "POST /orders creates a new order",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sfdcOrderId\": \"a0X{{$timestamp}}\",\n  \"accountName\": \"Contract Test Account\",\n  \"status\": \"New\",\n  \"amount\": 250\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 201', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "pm.test('action is created', function () { pm.expect(json.action).to.eql('created'); });",
+                  "pm.test('order has an erp_order_id', function () { pm.expect(json.order.erp_order_id).to.be.a('string'); });",
+                  "pm.collectionVariables.set('sfdcOrderId', json.order.sfdc_order_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /orders updates the existing order",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sfdcOrderId\": \"{{sfdcOrderId}}\",\n  \"status\": \"Processing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('action is updated', function () { pm.expect(json.action).to.eql('updated'); });",
+                  "pm.test('status field reflects the update', function () { pm.expect(json.order.status).to.eql('Processing'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /orders rejects a request missing sfdcOrderId",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"New\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('error message mentions sfdcOrderId', function () {",
+                  "  pm.expect(pm.response.json().error).to.match(/sfdcOrderId is required/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /orders lists non-deleted orders",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is an array', function () { pm.expect(pm.response.json()).to.be.an('array'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /orders/:sfdcOrderId soft-deletes the order",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{sfdcOrderId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "{{sfdcOrderId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('action is deleted', function () { pm.expect(pm.response.json().action).to.eql('deleted'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /orders/:sfdcOrderId is a safe no-op when already deleted",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{sfdcOrderId}}-does-not-exist",
+              "host": ["{{baseUrl}}"],
+              "path": ["orders", "{{sfdcOrderId}}-does-not-exist"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('action is noop', function () { pm.expect(pm.response.json().action).to.eql('noop'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Inventory",
+      "item": [
+        {
+          "name": "POST /inventory creates a new item",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["inventory"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"erpItemId\": \"ERP-ITEM-{{$timestamp}}\",\n  \"productName\": \"Contract Test Widget\",\n  \"quantityOnHand\": 42\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 201', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "pm.test('action is created', function () { pm.expect(json.action).to.eql('created'); });",
+                  "pm.collectionVariables.set('erpItemId', json.item.erp_item_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /inventory updates the existing item",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["inventory"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"erpItemId\": \"{{erpItemId}}\",\n  \"quantityOnHand\": 7\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('action is updated', function () { pm.expect(json.action).to.eql('updated'); });",
+                  "pm.test('quantity reflects the update', function () { pm.expect(json.item.quantity_on_hand).to.eql(7); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /inventory rejects create with missing fields",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["inventory"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"erpItemId\": \"ERP-ITEM-INCOMPLETE-{{$timestamp}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('error mentions required fields', function () {",
+                  "  pm.expect(pm.response.json().error).to.match(/productName and quantityOnHand are required/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /inventory lists items",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/inventory",
+              "host": ["{{baseUrl}}"],
+              "path": ["inventory"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is an array', function () { pm.expect(pm.response.json()).to.be.an('array'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Sync Events",
+      "item": [
+        {
+          "name": "POST /events records a sync event",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sfdcRecordId\": \"a0XCONTRACTTEST\",\n  \"changeType\": \"UPDATE\",\n  \"changedFields\": [\"Status__c\"],\n  \"status\": \"error\",\n  \"errorMessage\": \"simulated failure for contract test\",\n  \"payload\": { \"sfdcOrderId\": \"a0XCONTRACTTEST\", \"status\": \"Shipped\" }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 201', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "pm.test('event was persisted with an id', function () { pm.expect(json.id).to.exist; });",
+                  "pm.collectionVariables.set('eventId', json.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events rejects a request missing required fields",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": {
+              "raw": "{{baseUrl}}/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"changeType\": \"UPDATE\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events lists recent events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/events?limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["events"],
+              "query": [{ "key": "limit", "value": "10" }]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('response is an array', function () { pm.expect(pm.response.json()).to.be.an('array'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /metrics summarizes sync events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["metrics"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('has events_today count', function () { pm.expect(json.events_today).to.exist; });",
+                  "pm.test('has errors_today count', function () { pm.expect(json.errors_today).to.exist; });",
+                  "pm.test('has success_today count', function () { pm.expect(json.success_today).to.exist; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events/:id/retry returns 404 for an unknown event",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/events/99999999/retry",
+              "host": ["{{baseUrl}}"],
+              "path": ["events", "99999999", "retry"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 404', function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events/:id/retry re-applies a stored payload",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/events/{{eventId}}/retry",
+              "host": ["{{baseUrl}}"],
+              "path": ["events", "{{eventId}}", "retry"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status code is 200 or 400 (payload references a test-only sfdc id)', function () {",
+                  "  pm.expect([200, 400]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('response includes the updated event record', function () {",
+                  "  pm.expect(pm.response.json().event).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
