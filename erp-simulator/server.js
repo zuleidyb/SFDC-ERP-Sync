@@ -90,10 +90,40 @@ app.post("/orders", async (req, res) => {
 });
 
 app.get("/orders", async (req, res) => {
-  const result = await pool.query(
-    "SELECT * FROM orders ORDER BY created_at DESC"
-  );
+  const includeDeleted = req.query.includeDeleted === "true";
+  const query = includeDeleted
+    ? "SELECT * FROM orders ORDER BY created_at DESC"
+    : "SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY created_at DESC";
+  const result = await pool.query(query);
   res.json(result.rows);
+});
+
+// Soft-delete: mark the row instead of removing it, preserving the audit trail.
+// A DELETE for a record that was never synced is a valid no-op, not an error.
+app.delete("/orders/:sfdcOrderId", async (req, res) => {
+  const { sfdcOrderId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `UPDATE orders
+       SET deleted_at = now(), updated_at = now()
+       WHERE sfdc_order_id = $1
+       RETURNING *`,
+      [sfdcOrderId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({
+        action: "noop",
+        message: "No matching order found; nothing to delete."
+      });
+    }
+
+    res.json({ action: "deleted", order: result.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Sync event log: every CDC event the Integration Service processes gets recorded here,
