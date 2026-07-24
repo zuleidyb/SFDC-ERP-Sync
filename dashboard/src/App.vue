@@ -1,16 +1,16 @@
-﻿<script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+<script setup>
+import { ref, reactive, onMounted, onUnmounted } from "vue";
 import MetricTiles from "./components/MetricTiles.vue";
 import OrdersTable from "./components/OrdersTable.vue";
 import EventFeed from "./components/EventFeed.vue";
 import { getOrders, getEvents, getMetrics, retryEvent } from "./api";
-
 const orders = ref([]);
 const events = ref([]);
 const metrics = ref({});
 const lastRefreshed = ref(null);
+const retryingIds = reactive(new Set());
+const retryResults = reactive({});
 let intervalId = null;
-
 async function refresh() {
   try {
     const [ordersData, eventsData, metricsData] = await Promise.all([
@@ -26,26 +26,30 @@ async function refresh() {
     console.error("Refresh failed:", err.message);
   }
 }
-
 async function handleRetry(id) {
+  retryingIds.add(id);
   try {
     await retryEvent(id);
+    retryResults[id] = "success";
     await refresh();
   } catch (err) {
+    retryResults[id] = "error";
     console.error("Retry failed:", err.message);
+  } finally {
+    retryingIds.delete(id);
+    setTimeout(() => {
+      delete retryResults[id];
+    }, 2500);
   }
 }
-
 onMounted(() => {
   refresh();
   intervalId = setInterval(refresh, 4000);
 });
-
 onUnmounted(() => {
   clearInterval(intervalId);
 });
 </script>
-
 <template>
   <div class="app">
     <header class="app-header">
@@ -57,13 +61,16 @@ onUnmounted(() => {
         </span>
       </p>
     </header>
-
     <MetricTiles :metrics="metrics" />
-    <EventFeed :events="events" @retry="handleRetry" />
+    <EventFeed
+      :events="events"
+      :retrying-ids="retryingIds"
+      :retry-results="retryResults"
+      @retry="handleRetry"
+    />
     <OrdersTable :orders="orders" />
   </div>
 </template>
-
 <style scoped>
 .app {
   max-width: 960px;

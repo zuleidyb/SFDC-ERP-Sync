@@ -1,18 +1,24 @@
-ï»¿<script setup>
+<script setup>
 defineEmits(["retry"]);
 defineProps({
   events: {
     type: Array,
     default: () => [],
   },
+  retryingIds: {
+    type: Set,
+    default: () => new Set(),
+  },
+  retryResults: {
+    type: Object,
+    default: () => ({}),
+  },
 });
-
 function formatTime(value) {
-  if (!value) return "\u2014";
+  if (!value) return "—";
   return new Date(value).toLocaleTimeString();
 }
 </script>
-
 <template>
   <section class="panel">
     <h2>Live Sync Events</h2>
@@ -29,9 +35,21 @@ function formatTime(value) {
           <span class="badge" :class="`status-${event.status}`">{{ event.status }}</span>
           <span class="mono">{{ formatTime(event.created_at) }}</span>
           <span v-if="event.retry_count > 0" class="mono">retries: {{ event.retry_count }}</span>
-          <button v-if="event.status === 'error'" class="retry-btn" @click="$emit('retry', event.id)">
-            Retry
+          <button
+            v-if="event.status === 'error'"
+            class="retry-btn"
+            :disabled="retryingIds.has(event.id)"
+            @click="$emit('retry', event.id)"
+          >
+            <span v-if="retryingIds.has(event.id)" class="spinner"></span>
+            {{ retryingIds.has(event.id) ? "Retrying…" : "Retry" }}
           </button>
+          <span v-if="retryResults[event.id] === 'success'" class="retry-flash retry-flash-success">
+            Retried &check;
+          </span>
+          <span v-if="retryResults[event.id] === 'error'" class="retry-flash retry-flash-error">
+            Still failing
+          </span>
         </div>
         <p v-if="event.error_message" class="error-msg">{{ event.error_message }}</p>
       </li>
@@ -39,7 +57,6 @@ function formatTime(value) {
     <p v-else class="empty">No sync events yet.</p>
   </section>
 </template>
-
 <style scoped>
 .panel {
   background: #161b26;
@@ -106,6 +123,9 @@ h2 {
 .status-success { background: #143526; color: #4ade80; }
 .status-error { background: #331a1a; color: #f87171; }
 .retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   background: #2a3550;
   border: 1px solid #3a4a6e;
   color: #cdd8f5;
@@ -114,8 +134,35 @@ h2 {
   font-size: 0.75rem;
   cursor: pointer;
 }
-.retry-btn:hover {
+.retry-btn:hover:not(:disabled) {
   background: #34426a;
+}
+.retry-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid #cdd8f5;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.retry-flash {
+  font-size: 0.75rem;
+  font-weight: 600;
+  animation: fadeIn 0.2s ease-in;
+}
+.retry-flash-success { color: #4ade80; }
+.retry-flash-error { color: #f87171; }
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .error-msg {
   margin: 0.4rem 0 0;
